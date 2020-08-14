@@ -43,6 +43,7 @@
 #include <AP_EFI/AP_EFI.h>
 #include <AP_Proximity/AP_Proximity.h>
 #include <AP_Scripting/AP_Scripting.h>
+#include <AP_Winch/AP_Winch.h>
 
 #include <stdio.h>
 
@@ -65,6 +66,7 @@
   #endif
   #include <AP_ToshibaCAN/AP_ToshibaCAN.h>
   #include <AP_PiccoloCAN/AP_PiccoloCAN.h>
+  #include <AP_UAVCAN/AP_UAVCAN.h>
 #endif
 
 #include <AP_BattMonitor/AP_BattMonitor.h>
@@ -265,7 +267,7 @@ bool GCS_MAVLINK::send_battery_status()
 
     for(uint8_t i = 0; i < AP_BATT_MONITOR_MAX_INSTANCES; i++) {
         const uint8_t battery_id = (last_battery_status_idx + 1) % AP_BATT_MONITOR_MAX_INSTANCES;
-        if (battery.get_type(battery_id) != AP_BattMonitor_Params::BattMonitor_Type::BattMonitor_TYPE_NONE) {
+        if (battery.get_type(battery_id) != AP_BattMonitor::Type::NONE) {
             CHECK_PAYLOAD_SIZE(BATTERY_STATUS);
             send_battery_status(battery_id);
             last_battery_status_idx = battery_id;
@@ -577,11 +579,13 @@ void GCS_MAVLINK::handle_mission_write_partial_list(const mavlink_message_t &msg
  */
 void GCS_MAVLINK::handle_mount_message(const mavlink_message_t &msg)
 {
+#if HAL_MOUNT_ENABLED
     AP_Mount *mount = AP::mount();
     if (mount == nullptr) {
         return;
     }
     mount->handle_message(chan, msg);
+#endif
 }
 
 /*
@@ -589,11 +593,13 @@ void GCS_MAVLINK::handle_mount_message(const mavlink_message_t &msg)
  */
 void GCS_MAVLINK::handle_param_value(const mavlink_message_t &msg)
 {
+#if HAL_MOUNT_ENABLED
     AP_Mount *mount = AP::mount();
     if (mount == nullptr) {
         return;
     }
     mount->handle_param_value(msg);
+#endif
 }
 
 void GCS_MAVLINK::send_text(MAV_SEVERITY severity, const char *fmt, ...) const
@@ -802,6 +808,7 @@ ap_message GCS_MAVLINK::mavlink_id_to_ap_message_id(const uint32_t mavlink_id) c
         { MAVLINK_MSG_ID_AUTOPILOT_VERSION,     MSG_AUTOPILOT_VERSION},
         { MAVLINK_MSG_ID_EFI_STATUS,            MSG_EFI_STATUS},
         { MAVLINK_MSG_ID_GENERATOR_STATUS,      MSG_GENERATOR_STATUS},
+        { MAVLINK_MSG_ID_WINCH_STATUS,          MSG_WINCH_STATUS},
             };
 
     for (uint8_t i=0; i<ARRAY_SIZE(map); i++) {
@@ -3743,11 +3750,15 @@ MAV_RESULT GCS_MAVLINK::handle_command_accelcal_vehicle_pos(const mavlink_comman
 
 MAV_RESULT GCS_MAVLINK::handle_command_mount(const mavlink_command_long_t &packet)
 {
+#if HAL_MOUNT_ENABLED
     AP_Mount *mount = AP::mount();
     if (mount == nullptr) {
         return MAV_RESULT_UNSUPPORTED;
     }
     return mount->handle_command_long(packet);
+#else
+    return MAV_RESULT_UNSUPPORTED;
+#endif
 }
 
 MAV_RESULT GCS_MAVLINK::handle_command_do_set_home(const mavlink_command_long_t &packet)
@@ -4003,6 +4014,7 @@ void GCS_MAVLINK::handle_command_long(const mavlink_message_t &msg)
 
 MAV_RESULT GCS_MAVLINK::handle_command_do_set_roi(const Location &roi_loc)
 {
+#if HAL_MOUNT_ENABLED
     AP_Mount *mount = AP::mount();
     if (mount == nullptr) {
         return MAV_RESULT_UNSUPPORTED;
@@ -4023,6 +4035,9 @@ MAV_RESULT GCS_MAVLINK::handle_command_do_set_roi(const Location &roi_loc)
         mount->set_roi_target(roi_loc);
     }
     return MAV_RESULT_ACCEPTED;
+#else
+    return MAV_RESULT_UNSUPPORTED;
+#endif
 }
 
 MAV_RESULT GCS_MAVLINK::handle_command_int_do_set_home(const mavlink_command_int_t &packet)
@@ -4058,12 +4073,16 @@ MAV_RESULT GCS_MAVLINK::handle_command_int_do_set_home(const mavlink_command_int
 
 MAV_RESULT GCS_MAVLINK::handle_command_do_set_roi_sysid(const uint8_t sysid)
 {
+#if HAL_MOUNT_ENABLED
     AP_Mount *mount = AP::mount();
     if (mount == nullptr) {
         return MAV_RESULT_UNSUPPORTED;
     }
     mount->set_target_sysid(sysid);
     return MAV_RESULT_ACCEPTED;
+#else
+    return MAV_RESULT_UNSUPPORTED;
+#endif
 }
 
 MAV_RESULT GCS_MAVLINK::handle_command_do_set_roi_sysid(const mavlink_command_int_t &packet)
@@ -4348,20 +4367,24 @@ void GCS_MAVLINK::send_global_position_int()
 
 void GCS_MAVLINK::send_gimbal_report() const
 {
+#if HAL_MOUNT_ENABLED
     AP_Mount *mount = AP::mount();
     if (mount == nullptr) {
         return;
     }
     mount->send_gimbal_report(chan);
+#endif
 }
 
 void GCS_MAVLINK::send_mount_status() const
 {
+#if HAL_MOUNT_ENABLED
     AP_Mount *mount = AP::mount();
     if (mount == nullptr) {
         return;
     }
     mount->send_mount_status(chan);
+#endif
 }
 
 void GCS_MAVLINK::send_set_position_target_global_int(uint8_t target_system, uint8_t target_component, const Location& loc)
@@ -4716,7 +4739,13 @@ bool GCS_MAVLINK::try_send_message(const enum ap_message id)
                     break;
                 }
 #endif
-                case AP_BoardConfig_CAN::Protocol_Type_UAVCAN:
+                case AP_BoardConfig_CAN::Protocol_Type_UAVCAN: {
+                    AP_UAVCAN *ap_uavcan = AP_UAVCAN::get_uavcan(i);
+                    if (ap_uavcan != nullptr) {
+                        ap_uavcan->send_esc_telemetry_mavlink(uint8_t(chan));
+                    }
+                    break;
+                }
                 case AP_BoardConfig_CAN::Protocol_Type_None:
                 default:
                     break;
@@ -4736,6 +4765,11 @@ bool GCS_MAVLINK::try_send_message(const enum ap_message id)
 #endif
         break;
     }
+
+    case MSG_WINCH_STATUS:
+        CHECK_PAYLOAD_SIZE(WINCH_STATUS);
+        send_winch_status();
+        break;
 
     default:
         // try_send_message must always at some stage return true for
